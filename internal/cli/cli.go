@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/overworks/mantisbt-cli/internal/config"
 	"github.com/overworks/mantisbt-cli/internal/mantis"
@@ -127,7 +129,7 @@ func routeIssues(args []string) (apiCall, int) {
 
 func routeIssue(args []string) (apiCall, int) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue get <issue_id>")
+		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue <get|create|update|delete|note> ...")
 		return nil, 2
 	}
 	switch args[0] {
@@ -145,15 +147,232 @@ func routeIssue(args []string) (apiCall, int) {
 		return func(c *mantis.Client) (any, error) {
 			return c.Get("/api/rest/issues/"+issueID, nil)
 		}, 0
+	case "create":
+		return routeIssueCreate(args[1:])
+	case "update":
+		return routeIssueUpdate(args[1:])
+	case "delete":
+		return routeIssueDelete(args[1:])
+	case "note":
+		return routeIssueNote(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "mantisbt-cli: unknown issue command %q\n", args[0])
 		return nil, 2
 	}
 }
 
+func routeIssueCreate(args []string) (apiCall, int) {
+	fs := flag.NewFlagSet("issue create", flag.ContinueOnError)
+	summary := fs.String("summary", "", "Issue summary (required).")
+	description := fs.String("description", "", "Issue description (required).")
+	project := fs.String("project", "", "Project id or name (required).")
+	category := fs.String("category", "", "Category name (required).")
+	priority := fs.String("priority", "", "Priority name (optional).")
+	severity := fs.String("severity", "", "Severity name (optional).")
+	if err := fs.Parse(args); err != nil {
+		return nil, 2
+	}
+
+	var missing []string
+	if *summary == "" {
+		missing = append(missing, "--summary")
+	}
+	if *description == "" {
+		missing = append(missing, "--description")
+	}
+	if *project == "" {
+		missing = append(missing, "--project")
+	}
+	if *category == "" {
+		missing = append(missing, "--category")
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(os.Stderr, "issue create: missing required flags: %s\n", strings.Join(missing, ", "))
+		return nil, 2
+	}
+
+	body := map[string]any{
+		"summary":     *summary,
+		"description": *description,
+		"category":    map[string]any{"name": *category},
+		"project":     projectRef(*project),
+	}
+	if *priority != "" {
+		body["priority"] = map[string]any{"name": *priority}
+	}
+	if *severity != "" {
+		body["severity"] = map[string]any{"name": *severity}
+	}
+
+	return func(c *mantis.Client) (any, error) {
+		return c.Post("/api/rest/issues", body)
+	}, 0
+}
+
+func routeIssueUpdate(args []string) (apiCall, int) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue update <issue_id> [--summary ...] [--status ...] ...")
+		return nil, 2
+	}
+	issueID := args[0]
+
+	fs := flag.NewFlagSet("issue update", flag.ContinueOnError)
+	summary := fs.String("summary", "", "New summary.")
+	description := fs.String("description", "", "New description.")
+	status := fs.String("status", "", "New status name.")
+	handler := fs.String("handler", "", "Assignee username.")
+	priority := fs.String("priority", "", "New priority name.")
+	severity := fs.String("severity", "", "New severity name.")
+	if err := fs.Parse(args[1:]); err != nil {
+		return nil, 2
+	}
+
+	// Only send fields the user actually set, so unspecified fields are left
+	// untouched by the partial update.
+	body := map[string]any{}
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "summary":
+			body["summary"] = *summary
+		case "description":
+			body["description"] = *description
+		case "status":
+			body["status"] = map[string]any{"name": *status}
+		case "handler":
+			body["handler"] = map[string]any{"name": *handler}
+		case "priority":
+			body["priority"] = map[string]any{"name": *priority}
+		case "severity":
+			body["severity"] = map[string]any{"name": *severity}
+		}
+	})
+	if len(body) == 0 {
+		fmt.Fprintln(os.Stderr, "issue update: nothing to update; provide at least one field flag")
+		return nil, 2
+	}
+
+	return func(c *mantis.Client) (any, error) {
+		return c.Patch("/api/rest/issues/"+issueID, body)
+	}, 0
+}
+
+func routeIssueDelete(args []string) (apiCall, int) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue delete <issue_id> [--yes]")
+		return nil, 2
+	}
+	issueID := args[0]
+
+	fs := flag.NewFlagSet("issue delete", flag.ContinueOnError)
+	yes := fs.Bool("yes", false, "Skip the confirmation prompt.")
+	if err := fs.Parse(args[1:]); err != nil {
+		return nil, 2
+	}
+
+	skipPrompt := *yes
+	return func(c *mantis.Client) (any, error) {
+		if !skipPrompt && !confirm(fmt.Sprintf("Delete issue #%s? This cannot be undone. [y/N] ", issueID)) {
+			return nil, fmt.Errorf("aborted")
+		}
+		return c.Delete("/api/rest/issues/" + issueID)
+	}, 0
+}
+
+func routeIssueNote(args []string) (apiCall, int) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue note <add|delete> ...")
+		return nil, 2
+	}
+	switch args[0] {
+	case "add":
+		return routeIssueNoteAdd(args[1:])
+	case "delete":
+		return routeIssueNoteDelete(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "mantisbt-cli: unknown note command %q\n", args[0])
+		return nil, 2
+	}
+}
+
+func routeIssueNoteAdd(args []string) (apiCall, int) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue note add <issue_id> --text <text> [--private]")
+		return nil, 2
+	}
+	issueID := args[0]
+
+	fs := flag.NewFlagSet("issue note add", flag.ContinueOnError)
+	text := fs.String("text", "", "Note text (required).")
+	private := fs.Bool("private", false, "Make the note private.")
+	if err := fs.Parse(args[1:]); err != nil {
+		return nil, 2
+	}
+	if *text == "" {
+		fmt.Fprintln(os.Stderr, "issue note add: --text is required")
+		return nil, 2
+	}
+
+	body := map[string]any{"text": *text}
+	if *private {
+		body["view_state"] = map[string]any{"name": "private"}
+	}
+
+	return func(c *mantis.Client) (any, error) {
+		return c.Post("/api/rest/issues/"+issueID+"/notes", body)
+	}, 0
+}
+
+func routeIssueNoteDelete(args []string) (apiCall, int) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue note delete <issue_id> <note_id> [--yes]")
+		return nil, 2
+	}
+	issueID, noteID := args[0], args[1]
+
+	fs := flag.NewFlagSet("issue note delete", flag.ContinueOnError)
+	yes := fs.Bool("yes", false, "Skip the confirmation prompt.")
+	if err := fs.Parse(args[2:]); err != nil {
+		return nil, 2
+	}
+
+	skipPrompt := *yes
+	return func(c *mantis.Client) (any, error) {
+		if !skipPrompt && !confirm(fmt.Sprintf("Delete note #%s on issue #%s? [y/N] ", noteID, issueID)) {
+			return nil, fmt.Errorf("aborted")
+		}
+		return c.Delete("/api/rest/issues/" + issueID + "/notes/" + noteID)
+	}, 0
+}
+
+// projectRef renders a project reference, using an id when the value is numeric
+// and a name otherwise.
+func projectRef(v string) map[string]any {
+	if id, err := strconv.Atoi(v); err == nil {
+		return map[string]any{"id": id}
+	}
+	return map[string]any{"name": v}
+}
+
+// confirm prints a prompt and reads a yes/no answer from stdin. A non-interactive
+// stdin (EOF) is treated as "no".
+func confirm(prompt string) bool {
+	fmt.Fprint(os.Stderr, prompt)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		return false
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes"
+}
+
 func printResult(result any, cfg config.Config) {
 	if cfg.JSONOutput {
 		printJSON(result)
+		return
+	}
+
+	if result == nil {
+		fmt.Println("OK")
 		return
 	}
 
@@ -164,6 +383,10 @@ func printResult(result any, cfg config.Config) {
 		}
 		if issue, ok := m["issue"].(map[string]any); ok {
 			printIssue(issue)
+			return
+		}
+		if note, ok := m["note"].(map[string]any); ok {
+			printNote(note)
 			return
 		}
 		if user, ok := m["user"].(map[string]any); ok {
@@ -198,6 +421,16 @@ func printIssues(issues any) {
 			printIssue(issue)
 		}
 	}
+}
+
+func printNote(note map[string]any) {
+	id := "unknown"
+	if v, ok := note["id"]; ok {
+		id = valueToString(v)
+	}
+	reporter := ValueName(note["reporter"])
+	text := valueToString(note["text"])
+	fmt.Printf("note #%s by %s: %s\n", id, reporter, text)
 }
 
 func printIssue(issue map[string]any) {
@@ -299,7 +532,17 @@ usage:
 commands:
   auth whoami            Show the authenticated user.
   issues list            List accessible issues. [--page-size N] [--page N]
-  issue get <issue_id>   Show an issue by id.
+  issue get <id>         Show an issue by id.
+  issue create           Create an issue.
+                         --summary --description --project --category
+                         [--priority] [--severity]
+  issue update <id>      Update issue fields.
+                         [--summary] [--description] [--status] [--handler]
+                         [--priority] [--severity]
+  issue delete <id>      Delete an issue. [--yes]
+  issue note add <id>    Add a note. --text [--private]
+  issue note delete <id> <note_id>
+                         Delete a note. [--yes]
 
 global flags:
   --url      MantisBT base URL. Defaults to MANTISBT_URL.

@@ -31,6 +31,8 @@ mantisbt-cli --url https://mantis.example.com --token your-api-token auth whoami
 
 ## Usage
 
+### Read
+
 ```bash
 mantisbt-cli auth whoami
 mantisbt-cli issues list --page-size 20 --page 1
@@ -38,6 +40,31 @@ mantisbt-cli issue get 1234
 mantisbt-cli --json issue get 1234
 mantisbt-cli --version
 ```
+
+### Write
+
+```bash
+# Create an issue (summary, description, project, category are required).
+mantisbt-cli issue create \
+  --summary "Login fails on Safari" \
+  --description "Steps to reproduce ..." \
+  --project 3 --category General \
+  --priority high
+
+# Update only the fields you pass (partial update).
+mantisbt-cli issue update 1234 --status resolved --handler alice
+
+# Add a note (optionally private).
+mantisbt-cli issue note add 1234 --text "Confirmed, looking into it" --private
+
+# Delete an issue or note (prompts for confirmation; --yes skips it).
+mantisbt-cli issue delete 1234 --yes
+mantisbt-cli issue note delete 1234 5 --yes
+```
+
+`--project` accepts a numeric id or a project name. Destructive commands prompt
+for confirmation on an interactive terminal and refuse on a non-interactive one
+unless `--yes` is given.
 
 Global flags (`--url`, `--token`, `--json`) go before the subcommand. Use
 `--json` to print the raw JSON response instead of the formatted output.

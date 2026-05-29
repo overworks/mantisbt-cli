@@ -41,6 +41,21 @@ func (c *Client) Get(path string, params map[string]string) (any, error) {
 	return c.request(http.MethodGet, path, params, nil)
 }
 
+// Post performs a POST request with a JSON body.
+func (c *Client) Post(path string, payload any) (any, error) {
+	return c.request(http.MethodPost, path, nil, payload)
+}
+
+// Patch performs a PATCH request with a JSON body.
+func (c *Client) Patch(path string, payload any) (any, error) {
+	return c.request(http.MethodPatch, path, nil, payload)
+}
+
+// Delete performs a DELETE request.
+func (c *Client) Delete(path string) (any, error) {
+	return c.request(http.MethodDelete, path, nil, nil)
+}
+
 func (c *Client) request(method, path string, params map[string]string, payload any) (any, error) {
 	endpoint := c.buildURL(path, params)
 
