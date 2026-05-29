@@ -1,9 +1,9 @@
 # mantisbt-cli
 
 [![CI](https://github.com/overworks/mantisbt-cli/actions/workflows/ci.yml/badge.svg?branch=0.x)](https://github.com/overworks/mantisbt-cli/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/overworks/mantisbt-cli/releases/latest)
+[![Release](https://img.shields.io/github/v/release/overworks/mantisbt-cli)](https://github.com/overworks/mantisbt-cli/releases/latest)
 [![Go Report Card](https://goreportcard.com/badge/github.com/overworks/mantisbt-cli)](https://goreportcard.com/report/github.com/overworks/mantisbt-cli)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![License: MIT](https://img.shields.io/github/license/overworks/mantisbt-cli)](LICENSE)
 
 A small command line client for the MantisBT REST API, written in Go and
 distributed as a single static binary. Standard library only — no third-party
