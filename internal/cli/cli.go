@@ -12,8 +12,12 @@ import (
 	"github.com/overworks/mantisbt-cli/internal/mantis"
 )
 
-// Version is set from main at build time.
-var Version = "dev"
+// Version, Commit, and Date are set from main at build time.
+var (
+	Version = "dev"
+	Commit  = "none"
+	Date    = "unknown"
+)
 
 // apiCall is a prepared request, deferred until configuration is loaded.
 type apiCall func(*mantis.Client) (any, error)
@@ -34,7 +38,7 @@ func Main(argv []string) int {
 	}
 
 	if versionFlag {
-		fmt.Println("mantisbt-cli " + Version)
+		fmt.Printf("mantisbt-cli %s (commit %s, built %s)\n", Version, Commit, Date)
 		return 0
 	}
 

@@ -50,16 +50,26 @@ make vet
 make fmt
 ```
 
-### Cross-compiled release binaries
+### Releases
+
+Releases are automated with [GoReleaser](https://goreleaser.com/). Pushing a
+`v*` tag triggers the `release` GitHub Actions workflow, which cross-compiles
+binaries for linux, macOS, and Windows (amd64 + arm64), builds archives plus a
+checksums file, and publishes them to a GitHub Release:
 
 ```bash
-make release VERSION=0.1.0
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
-This produces static binaries in `dist/` for linux, macOS, and Windows
-(amd64 + arm64). The natural next step for public distribution is
-[`goreleaser`](https://goreleaser.com/) wired to GitHub Releases plus a
-Homebrew tap.
+To dry-run the whole release locally without publishing:
+
+```bash
+goreleaser release --snapshot --clean   # artifacts land in dist/
+```
+
+`make release` is also available for a quick cross-compile without GoReleaser.
+A Homebrew tap is a natural follow-up for public distribution.
 
 ## Layout
 
