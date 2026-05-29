@@ -34,6 +34,7 @@ internal/mantis/         HTTP client (Get/Post/Patch/Delete) for the REST API
 internal/cli/            subcommand routing, request building, output formatting
 skills/mantisbt/         distributable Agent Skill (see README "Agent skill")
 .goreleaser.yaml         release config; bundles the binary + skill into archives
+install.sh               curl | sh installer that pulls a binary from Releases
 ```
 
 ## Architecture & conventions

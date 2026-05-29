@@ -6,9 +6,29 @@ dependencies, no runtime required on the target machine.
 
 ## Install
 
-Download a prebuilt binary for your platform from the
-[releases page](https://github.com/overworks/mantisbt-cli/releases) and put it
-on your `PATH`, or build from source:
+### Install script (Linux, macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/overworks/mantisbt-cli/0.x/install.sh | sh
+```
+
+The script detects your OS and architecture, downloads the matching binary from
+the latest release, verifies its SHA-256 checksum, and installs it to
+`~/.local/bin`. Set `INSTALL_DIR` to change the location, or `VERSION` to pin a
+release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/overworks/mantisbt-cli/0.x/install.sh | VERSION=v0.1.0 sh
+```
+
+### Manual download
+
+Grab a prebuilt archive for your platform from the
+[releases page](https://github.com/overworks/mantisbt-cli/releases) (Windows
+builds are published as `.zip`), extract it, and put `mantisbt-cli` on your
+`PATH`.
+
+### Build from source
 
 ```bash
 make build          # -> bin/mantisbt-cli
