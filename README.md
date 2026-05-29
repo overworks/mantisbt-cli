@@ -6,7 +6,8 @@ dependencies, no runtime required on the target machine.
 
 ## Install
 
-Download a prebuilt binary for your platform from the releases page and put it
+Download a prebuilt binary for your platform from the
+[releases page](https://github.com/overworks/mantisbt-cli/releases) and put it
 on your `PATH`, or build from source:
 
 ```bash

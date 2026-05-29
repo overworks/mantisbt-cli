@@ -83,6 +83,7 @@ Because MantisBT does not filter by status or summary server-side, raise
 
 - Enum-like fields (`--status`, `--priority`, `--severity`, `--category`) take
   the MantisBT name (e.g. `--status resolved`), not a numeric id.
-- `--project` accepts a numeric project id or a project name.
+- `--project` on `issue create` accepts a project id or name; on `issues list`
+  it must be a numeric project id.
 - A successful write prints the affected issue/note; a successful delete prints
   `OK`. A non-zero exit code means the call failed — read stderr.

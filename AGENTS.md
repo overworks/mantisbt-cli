@@ -72,7 +72,8 @@ skills/mantisbt/         distributable Agent Skill (see README "Agent skill")
 - `issues list` filters: `--project`/`--filter`/`--select` are server-side
   (query params); `--status`/`--search` are client-side over the fetched page.
 - MantisBT enum fields (status, priority, severity, category) are sent by
-  name (`{"name": ...}`); `--project` accepts an id or a name.
+  name (`{"name": ...}`); `issue create`'s `--project` accepts an id or a name,
+  while the `issues list --project` filter is id-only (`project_id`).
 
 ## Releases
 
