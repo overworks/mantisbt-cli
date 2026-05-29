@@ -27,6 +27,12 @@ builds:
 archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Specifying files replaces the default set, so list the docs explicitly
+    # and bundle the agent skill alongside the binary.
+    files:
+      - LICENSE
+      - README.md
+      - skills/**/*
     # Windows users expect zip archives.
     format_overrides:
       - goos: windows

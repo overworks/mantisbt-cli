@@ -116,6 +116,33 @@ goreleaser release --snapshot --clean   # artifacts land in dist/
 `make release` is also available for a quick cross-compile without GoReleaser.
 A Homebrew tap is a natural follow-up for public distribution.
 
+## Agent skill
+
+A distributable [Agent Skill](https://www.anthropic.com/news/skills) for driving
+`mantisbt-cli` ships in [`skills/mantisbt/`](skills/mantisbt/SKILL.md). It
+teaches an AI agent the commands, when to use `--json` for parsing, the issue
+filters, and how to handle destructive commands safely. The format is portable
+across skill-aware agents (Claude Code, Codex, Cursor, OpenCode, …).
+
+Install it from this repo with [`skills`](https://github.com/vercel-labs/skills),
+which auto-discovers the `skills/` layout and copies the skill into your agent's
+config directory:
+
+```bash
+npx skills add overworks/mantisbt-cli            # install into the detected agent(s)
+npx skills add overworks/mantisbt-cli --list     # preview skills without installing
+npx skills add overworks/mantisbt-cli -g         # install globally (all projects)
+```
+
+To pin a branch or skill explicitly:
+
+```bash
+npx skills add https://github.com/overworks/mantisbt-cli/tree/0.x/skills/mantisbt
+```
+
+Or copy `skills/mantisbt/` into your agent's skills directory by hand (e.g.
+`~/.claude/skills/`).
+
 ## Layout
 
 ```
