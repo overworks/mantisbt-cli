@@ -60,6 +60,48 @@ func TestRouteRejectsUpdateWithoutFields(t *testing.T) {
 	}
 }
 
+func TestRouteAcceptsIssuesListFilters(t *testing.T) {
+	args := []string{"issues", "list", "--project", "3", "--filter", "assigned",
+		"--select", "id,summary", "--status", "resolved", "--search", "login"}
+	call, code := route(args)
+	if call == nil {
+		t.Fatalf("expected a resolved command, got nil (exit code %d)", code)
+	}
+}
+
+func TestFilterIssues(t *testing.T) {
+	result := map[string]any{
+		"issues": []any{
+			map[string]any{"id": float64(1), "summary": "Login button broken", "status": map[string]any{"name": "new"}},
+			map[string]any{"id": float64(2), "summary": "Logout is slow", "status": map[string]any{"name": "resolved"}},
+			map[string]any{"id": float64(3), "summary": "login form typo", "status": map[string]any{"name": "resolved"}},
+		},
+	}
+
+	issuesOf := func(v any) []any {
+		return v.(map[string]any)["issues"].([]any)
+	}
+
+	// status is matched case-insensitively.
+	if got := issuesOf(filterIssues(result, "RESOLVED", "")); len(got) != 2 {
+		t.Fatalf("status filter: expected 2 issues, got %d", len(got))
+	}
+
+	// search is a case-insensitive substring on the summary.
+	if got := issuesOf(filterIssues(result, "", "login")); len(got) != 2 {
+		t.Fatalf("search filter: expected 2 issues, got %d", len(got))
+	}
+
+	// combined filters are ANDed together.
+	got := issuesOf(filterIssues(result, "resolved", "login"))
+	if len(got) != 1 {
+		t.Fatalf("combined filter: expected 1 issue, got %d", len(got))
+	}
+	if id := got[0].(map[string]any)["id"]; id != float64(3) {
+		t.Fatalf("combined filter: expected issue 3, got %v", id)
+	}
+}
+
 func TestProjectRef(t *testing.T) {
 	if ref := projectRef("42"); ref["id"] != 42 {
 		t.Fatalf("numeric project should use id, got %v", ref)

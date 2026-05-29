@@ -114,12 +114,37 @@ func routeIssues(args []string) (apiCall, int) {
 		fs := flag.NewFlagSet("issues list", flag.ContinueOnError)
 		pageSize := fs.String("page-size", "50", "Number of issues to request.")
 		page := fs.String("page", "1", "Page number to request.")
+		project := fs.String("project", "", "Filter by project id (server-side).")
+		filterID := fs.String("filter", "", "Predefined filter: assigned, reported, monitored, unassigned, or a stored filter id (server-side).")
+		selectFields := fs.String("select", "", "Comma-separated fields to return, e.g. id,summary,status (server-side).")
+		status := fs.String("status", "", "Keep only issues with this status name (client-side, current page only).")
+		search := fs.String("search", "", "Keep only issues whose summary contains this text (client-side, current page only).")
 		if err := fs.Parse(args[1:]); err != nil {
 			return nil, 2
 		}
-		ps, pg := *pageSize, *page
+
+		params := map[string]string{"page_size": *pageSize, "page": *page}
+		if *project != "" {
+			params["project_id"] = *project
+		}
+		if *filterID != "" {
+			params["filter_id"] = *filterID
+		}
+		if *selectFields != "" {
+			params["select"] = *selectFields
+		}
+
+		statusFilter := *status
+		searchFilter := strings.ToLower(*search)
 		return func(c *mantis.Client) (any, error) {
-			return c.Get("/api/rest/issues", map[string]string{"page_size": ps, "page": pg})
+			result, err := c.Get("/api/rest/issues", params)
+			if err != nil {
+				return nil, err
+			}
+			if statusFilter == "" && searchFilter == "" {
+				return result, nil
+			}
+			return filterIssues(result, statusFilter, searchFilter), nil
 		}, 0
 	default:
 		fmt.Fprintf(os.Stderr, "mantisbt-cli: unknown issues command %q\n", args[0])
@@ -365,6 +390,43 @@ func confirm(prompt string) bool {
 	return answer == "y" || answer == "yes"
 }
 
+// filterIssues applies client-side filters to a list response. status is
+// matched case-insensitively against the issue status name; search is a
+// lower-cased substring matched against the summary. The caller guarantees at
+// least one filter is non-empty.
+func filterIssues(result any, status, search string) any {
+	m, ok := result.(map[string]any)
+	if !ok {
+		return result
+	}
+	raw, ok := m["issues"].([]any)
+	if !ok {
+		return result
+	}
+
+	kept := make([]any, 0, len(raw))
+	for _, item := range raw {
+		issue, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if status != "" && !strings.EqualFold(ValueName(issue["status"]), status) {
+			continue
+		}
+		if search != "" && !strings.Contains(strings.ToLower(valueToString(issue["summary"])), search) {
+			continue
+		}
+		kept = append(kept, issue)
+	}
+
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	out["issues"] = kept
+	return out
+}
+
 func printResult(result any, cfg config.Config) {
 	if cfg.JSONOutput {
 		printJSON(result)
@@ -531,7 +593,10 @@ usage:
 
 commands:
   auth whoami            Show the authenticated user.
-  issues list            List accessible issues. [--page-size N] [--page N]
+  issues list            List accessible issues.
+                         [--page-size N] [--page N] [--project id]
+                         [--filter assigned|reported|monitored|unassigned]
+                         [--select fields] [--status name] [--search text]
   issue get <id>         Show an issue by id.
   issue create           Create an issue.
                          --summary --description --project --category

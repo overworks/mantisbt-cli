@@ -41,6 +41,24 @@ mantisbt-cli --json issue get 1234
 mantisbt-cli --version
 ```
 
+#### Filtering `issues list`
+
+```bash
+# Server-side filters (passed to the API):
+mantisbt-cli issues list --project 3
+mantisbt-cli issues list --filter assigned          # assigned|reported|monitored|unassigned
+mantisbt-cli issues list --select id,summary,status
+
+# Client-side filters (applied to the fetched page only — combine with --page-size):
+mantisbt-cli issues list --status resolved
+mantisbt-cli issues list --search login
+```
+
+The MantisBT REST API only supports `project_id` and `filter_id` as
+server-side issue filters, so `--status` and `--search` are applied locally to
+the issues returned by the current page. Raise `--page-size` if you need them to
+consider more issues.
+
 ### Write
 
 ```bash
