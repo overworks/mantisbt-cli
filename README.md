@@ -48,6 +48,14 @@ export MANTISBT_URL="https://mantis.example.com"
 export MANTISBT_TOKEN="your-api-token"
 ```
 
+`MANTISBT_URL` can point at the MantisBT web root, or directly at a REST API
+root when the server exposes one:
+
+```bash
+export MANTISBT_URL="https://mantis.example.com/api/rest"
+export MANTISBT_URL="https://mantis.example.com/api/rest/index.php"
+```
+
 Every command also accepts explicit connection flags, which take precedence
 over the environment:
 

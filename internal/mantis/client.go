@@ -112,6 +112,9 @@ func (c *Client) buildURL(path string, params map[string]string) string {
 	if !strings.HasPrefix(route, "/") {
 		route = "/" + route
 	}
+	if isRESTBaseURL(base) && strings.HasPrefix(route, "/api/rest/") {
+		route = strings.TrimPrefix(route, "/api/rest")
+	}
 	full := base + route
 	if len(params) > 0 {
 		q := url.Values{}
@@ -121,4 +124,13 @@ func (c *Client) buildURL(path string, params map[string]string) string {
 		full = full + "?" + q.Encode()
 	}
 	return full
+}
+
+func isRESTBaseURL(base string) bool {
+	u, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	path := strings.TrimRight(u.Path, "/")
+	return strings.HasSuffix(path, "/api/rest") || strings.HasSuffix(path, "/api/rest/index.php")
 }

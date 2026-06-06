@@ -22,6 +22,10 @@ export MANTISBT_URL="https://mantis.example.com"
 export MANTISBT_TOKEN="…"
 ```
 
+`MANTISBT_URL` may point at the MantisBT web root, or at the REST API root if
+the instance exposes one, such as `https://mantis.example.com/api/rest` or
+`https://mantis.example.com/api/rest/index.php`.
+
 If they are not set, every command fails with a "missing configuration" error.
 You may instead pass `--url` / `--token` before the subcommand. Check
 connectivity with `mantisbt-cli auth whoami`.
