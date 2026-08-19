@@ -285,6 +285,15 @@ func TestIssueFileGetWritesAttachment(t *testing.T) {
 		t.Fatalf("unexpected file content: %q", data)
 	}
 
+	// Attachments are written owner-only rather than at the umask default.
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("expected mode 0600, got %04o", mode)
+	}
+
 	d, ok := result.(downloaded)
 	if !ok {
 		t.Fatalf("expected a downloaded result, got %T", result)
