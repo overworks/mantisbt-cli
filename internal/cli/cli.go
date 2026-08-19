@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -489,7 +490,9 @@ func routeIssueFileGet(args []string) (apiCall, int) {
 		if err != nil {
 			return nil, fmt.Errorf("attachment #%s: malformed content: %w", fileID, err)
 		}
-		if err := os.WriteFile(path, data, 0o644); err != nil {
+		// Attachments can carry sensitive data, so they land owner-only rather
+		// than at the umask default.
+		if err := os.WriteFile(path, data, 0o600); err != nil {
 			return nil, fmt.Errorf("write %s: %w", path, err)
 		}
 		return downloaded{raw: result, path: path, size: len(data)}, nil
@@ -522,8 +525,11 @@ func attachmentPath(output, filename, fileID string) (string, error) {
 	if filename == "" || name == "." || name == string(filepath.Separator) {
 		return "", fmt.Errorf("attachment #%s has no usable filename; pass --output", fileID)
 	}
-	if _, err := os.Stat(name); err == nil {
+	switch _, err := os.Stat(name); {
+	case err == nil:
 		return "", fmt.Errorf("%s already exists; pass --output to choose a destination", name)
+	case !errors.Is(err, os.ErrNotExist):
+		return "", fmt.Errorf("check %s: %w", name, err)
 	}
 	return name, nil
 }
