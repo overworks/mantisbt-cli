@@ -43,6 +43,20 @@ checksum:
 
 changelog:
   sort: asc
+  # The default `git` provider prefixes every entry with the full commit SHA1;
+  # -1 drops the hash and leaves just the subject.
+  abbrev: -1
+  # Grouping is matched against the subject line, which GoReleaser prefixes with
+  # the commit SHA1 — hence the leading `^.*?` in each pattern.
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Other changes
+      order: 999
   filters:
     exclude:
       - "^docs:"
