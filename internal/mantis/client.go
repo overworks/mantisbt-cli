@@ -25,14 +25,19 @@ type Client struct {
 	BaseURL string
 	Token   string
 	HTTP    *http.Client
+
+	// restRoot records whether BaseURL already points at a REST API root, so
+	// that buildURL does not repeat the /api/rest prefix on every request.
+	restRoot bool
 }
 
 // NewClient builds a client with a sensible default timeout.
 func NewClient(baseURL, token string) *Client {
 	return &Client{
-		BaseURL: baseURL,
-		Token:   token,
-		HTTP:    &http.Client{Timeout: 30 * time.Second},
+		BaseURL:  baseURL,
+		Token:    token,
+		HTTP:     &http.Client{Timeout: 30 * time.Second},
+		restRoot: isRESTBaseURL(baseURL),
 	}
 }
 
@@ -112,7 +117,7 @@ func (c *Client) buildURL(path string, params map[string]string) string {
 	if !strings.HasPrefix(route, "/") {
 		route = "/" + route
 	}
-	if isRESTBaseURL(base) && strings.HasPrefix(route, "/api/rest/") {
+	if c.restRoot && strings.HasPrefix(route, "/api/rest/") {
 		route = strings.TrimPrefix(route, "/api/rest")
 	}
 	full := base + route
@@ -126,6 +131,7 @@ func (c *Client) buildURL(path string, params map[string]string) string {
 	return full
 }
 
+// isRESTBaseURL reports whether base already ends at a MantisBT REST API root.
 func isRESTBaseURL(base string) bool {
 	u, err := url.Parse(base)
 	if err != nil {
