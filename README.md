@@ -114,6 +114,30 @@ mantisbt-cli issue delete 1234 --yes
 mantisbt-cli issue note delete 1234 5 --yes
 ```
 
+### Attachments
+
+```bash
+# Attach one or more local files to an existing issue.
+mantisbt-cli issue file add 1234 fix.patch screenshot.png
+
+# Compose with Git to attach a patch.
+git diff > fix.patch
+mantisbt-cli issue file add 1234 fix.patch
+
+# List the attachments on an issue.
+mantisbt-cli issue file list 1234
+
+# Download one, either to a chosen path or to its own filename here.
+mantisbt-cli issue file get 1234 5 --output ./patches/fix.patch
+mantisbt-cli issue file get 1234 5
+```
+
+Without `--output`, the attachment is written to its own filename in the
+current directory and an existing file is never overwritten — pass `--output`
+to choose the destination explicitly. Note that MantisBT returns attachment
+content inline as base64, so `--json` output for `file list` includes every
+attachment's full contents.
+
 `--project` accepts a numeric id or a project name. Destructive commands prompt
 for confirmation on an interactive terminal and refuse on a non-interactive one
 unless `--yes` is given.

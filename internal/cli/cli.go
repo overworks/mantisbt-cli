@@ -2,11 +2,13 @@ package cli
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -23,6 +25,15 @@ var (
 
 // apiCall is a prepared request, deferred until configuration is loaded.
 type apiCall func(*mantis.Client) (any, error)
+
+// downloaded is returned by commands that save a response to disk. It keeps the
+// raw response around so --json stays raw while human output reports where the
+// bytes landed.
+type downloaded struct {
+	raw  any
+	path string
+	size int
+}
 
 // Main is the CLI entry point. It returns a process exit code.
 func Main(argv []string) int {
@@ -154,7 +165,7 @@ func routeIssues(args []string) (apiCall, int) {
 
 func routeIssue(args []string) (apiCall, int) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue <get|create|update|delete|note> ...")
+		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue <get|create|update|delete|note|file> ...")
 		return nil, 2
 	}
 	switch args[0] {
@@ -180,6 +191,8 @@ func routeIssue(args []string) (apiCall, int) {
 		return routeIssueDelete(args[1:])
 	case "note":
 		return routeIssueNote(args[1:])
+	case "file":
+		return routeIssueFile(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "mantisbt-cli: unknown issue command %q\n", args[0])
 		return nil, 2
@@ -369,6 +382,152 @@ func routeIssueNoteDelete(args []string) (apiCall, int) {
 	}, 0
 }
 
+func routeIssueFile(args []string) (apiCall, int) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue file <add|list|get> ...")
+		return nil, 2
+	}
+	switch args[0] {
+	case "add":
+		return routeIssueFileAdd(args[1:])
+	case "list":
+		return routeIssueFileList(args[1:])
+	case "get":
+		return routeIssueFileGet(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "mantisbt-cli: unknown file command %q\n", args[0])
+		return nil, 2
+	}
+}
+
+func routeIssueFileAdd(args []string) (apiCall, int) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue file add <issue_id> <path>...")
+		return nil, 2
+	}
+	issueID := args[0]
+
+	fs := flag.NewFlagSet("issue file add", flag.ContinueOnError)
+	if err := fs.Parse(args[1:]); err != nil {
+		return nil, 2
+	}
+	paths := fs.Args()
+	if len(paths) == 0 {
+		fmt.Fprintln(os.Stderr, "issue file add: at least one file path is required")
+		return nil, 2
+	}
+
+	// Files are read when the command runs, so routing stays free of I/O and a
+	// missing path is reported as a runtime error rather than a usage error.
+	return func(c *mantis.Client) (any, error) {
+		files := make([]any, 0, len(paths))
+		for _, path := range paths {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("read %s: %w", path, err)
+			}
+			files = append(files, map[string]any{
+				"name":    filepath.Base(path),
+				"content": base64.StdEncoding.EncodeToString(data),
+			})
+		}
+		return c.Post("/api/rest/issues/"+issueID+"/files", map[string]any{"files": files})
+	}, 0
+}
+
+func routeIssueFileList(args []string) (apiCall, int) {
+	fs := flag.NewFlagSet("issue file list", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return nil, 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue file list <issue_id>")
+		return nil, 2
+	}
+	issueID := rest[0]
+
+	return func(c *mantis.Client) (any, error) {
+		return c.Get("/api/rest/issues/"+issueID+"/files", nil)
+	}, 0
+}
+
+func routeIssueFileGet(args []string) (apiCall, int) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue file get <issue_id> <file_id> [--output path]")
+		return nil, 2
+	}
+	issueID, fileID := args[0], args[1]
+
+	fs := flag.NewFlagSet("issue file get", flag.ContinueOnError)
+	output := fs.String("output", "", "Destination path. Defaults to the attachment filename in the current directory.")
+	if err := fs.Parse(args[2:]); err != nil {
+		return nil, 2
+	}
+
+	dest := *output
+	return func(c *mantis.Client) (any, error) {
+		result, err := c.Get("/api/rest/issues/"+issueID+"/files/"+fileID, nil)
+		if err != nil {
+			return nil, err
+		}
+		file, ok := firstFile(result)
+		if !ok {
+			return nil, fmt.Errorf("attachment #%s not found on issue #%s", fileID, issueID)
+		}
+
+		path, err := attachmentPath(dest, valueToString(file["filename"]), fileID)
+		if err != nil {
+			return nil, err
+		}
+
+		encoded, _ := file["content"].(string)
+		if encoded == "" {
+			return nil, fmt.Errorf("attachment #%s has no content available for download", fileID)
+		}
+		data, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("attachment #%s: malformed content: %w", fileID, err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			return nil, fmt.Errorf("write %s: %w", path, err)
+		}
+		return downloaded{raw: result, path: path, size: len(data)}, nil
+	}, 0
+}
+
+// firstFile pulls the first entry out of a {"files": [...]} response.
+func firstFile(result any) (map[string]any, bool) {
+	m, ok := result.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	list, ok := m["files"].([]any)
+	if !ok || len(list) == 0 {
+		return nil, false
+	}
+	file, ok := list[0].(map[string]any)
+	return file, ok
+}
+
+// attachmentPath decides where a downloaded attachment is written. An explicit
+// --output wins and may overwrite; otherwise the server-supplied filename is
+// used, reduced to its base name so the server cannot pick the directory, and
+// an existing file is never clobbered without the user naming it.
+func attachmentPath(output, filename, fileID string) (string, error) {
+	if output != "" {
+		return output, nil
+	}
+	name := filepath.Base(filename)
+	if filename == "" || name == "." || name == string(filepath.Separator) {
+		return "", fmt.Errorf("attachment #%s has no usable filename; pass --output", fileID)
+	}
+	if _, err := os.Stat(name); err == nil {
+		return "", fmt.Errorf("%s already exists; pass --output to choose a destination", name)
+	}
+	return name, nil
+}
+
 // projectRef renders a project reference, using an id when the value is numeric
 // and a name otherwise.
 func projectRef(v string) map[string]any {
@@ -428,6 +587,15 @@ func filterIssues(result any, status, search string) any {
 }
 
 func printResult(result any, cfg config.Config) {
+	if d, ok := result.(downloaded); ok {
+		if cfg.JSONOutput {
+			printJSON(d.raw)
+			return
+		}
+		fmt.Printf("wrote %s (%d bytes)\n", d.path, d.size)
+		return
+	}
+
 	if cfg.JSONOutput {
 		printJSON(result)
 		return
@@ -449,6 +617,10 @@ func printResult(result any, cfg config.Config) {
 		}
 		if note, ok := m["note"].(map[string]any); ok {
 			printNote(note)
+			return
+		}
+		if files, ok := m["files"]; ok {
+			printFiles(files)
 			return
 		}
 		if user, ok := m["user"].(map[string]any); ok {
@@ -493,6 +665,37 @@ func printNote(note map[string]any) {
 	reporter := ValueName(note["reporter"])
 	text := valueToString(note["text"])
 	fmt.Printf("note #%s by %s: %s\n", id, reporter, text)
+}
+
+func printFiles(files any) {
+	list, ok := files.([]any)
+	if !ok {
+		printJSON(files)
+		return
+	}
+	for _, item := range list {
+		if file, ok := item.(map[string]any); ok {
+			fmt.Println(fileLine(file))
+		}
+	}
+}
+
+// fileLine renders one attachment. Attachment responses carry the base64
+// content inline, which is deliberately left out of the human-readable form.
+func fileLine(file map[string]any) string {
+	id := "unknown"
+	if v, ok := file["id"]; ok {
+		id = valueToString(v)
+	}
+	line := fmt.Sprintf("file #%s %s (%s bytes", id, valueToString(file["filename"]), valueToString(file["size"]))
+	if ct := truthyString(file["content_type"]); ct != "" {
+		line += ", " + ct
+	}
+	line += ")"
+	if reporter := ValueName(file["reporter"]); reporter != "" {
+		line += " by " + reporter
+	}
+	return line
 }
 
 func printIssue(issue map[string]any) {
@@ -608,6 +811,11 @@ commands:
   issue note add <id>    Add a note. --text [--private]
   issue note delete <id> <note_id>
                          Delete a note. [--yes]
+  issue file add <id> <path>...
+                         Attach one or more local files to an issue.
+  issue file list <id>   List the attachments on an issue.
+  issue file get <id> <file_id>
+                         Download an attachment. [--output path]
 
 global flags:
   --url      MantisBT base URL. Defaults to MANTISBT_URL.

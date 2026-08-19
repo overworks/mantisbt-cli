@@ -1,6 +1,6 @@
 ---
 name: mantisbt
-description: Manage MantisBT issues from the command line with the mantisbt-cli tool — list and search issues, show an issue, create and update issues, add or delete notes, and delete issues. Use whenever the user wants to read or change MantisBT bug-tracker data (issues, notes, statuses, assignments, projects).
+description: Manage MantisBT issues from the command line with the mantisbt-cli tool — list and search issues, show an issue, create and update issues, add or delete notes, upload and download issue attachments, and delete issues. Use whenever the user wants to read or change MantisBT bug-tracker data (issues, notes, attachments, statuses, assignments, projects).
 license: MIT
 metadata:
   version: 0.1.0
@@ -60,6 +60,11 @@ mantisbt-cli issue update <id> [--summary …] [--description …] \
 mantisbt-cli issue note add <id> --text "…" [--private]
 mantisbt-cli issue note delete <id> <note_id> [--yes]
 
+# Attachments
+mantisbt-cli issue file add <id> <path>...
+mantisbt-cli issue file list <id>
+mantisbt-cli issue file get <id> <file_id> [--output <path>]
+
 # Delete an issue
 mantisbt-cli issue delete <id> [--yes]
 ```
@@ -91,3 +96,11 @@ Because MantisBT does not filter by status or summary server-side, raise
   it must be a numeric project id.
 - A successful write prints the affected issue/note; a successful delete prints
   `OK`. A non-zero exit code means the call failed — read stderr.
+- `issue file add` uploads every path in one request and prints `OK`; run
+  `issue file list <id>` afterwards to see the stored attachment ids.
+- `issue file get` without `--output` writes the attachment to its own filename
+  in the current directory and refuses to overwrite an existing file, so pass
+  `--output` when you need a specific destination.
+- MantisBT returns attachment content inline as base64, so `--json issue file
+  list` includes every attachment's full contents — prefer the plain output
+  when you only need ids, names, and sizes.
