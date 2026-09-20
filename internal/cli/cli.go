@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"bufio"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -33,7 +31,7 @@ type apiCall func(*mantis.Client) (any, error)
 type downloaded struct {
 	raw  any
 	path string
-	size int
+	size int64
 }
 
 // Main is the CLI entry point. It returns a process exit code.
@@ -45,14 +43,18 @@ func Main(argv []string) int {
 	root.StringVar(&tokenFlag, "token", "", "MantisBT API token. Defaults to MANTISBT_TOKEN.")
 	root.BoolVar(&jsonFlag, "json", false, "Print raw JSON responses.")
 	root.BoolVar(&versionFlag, "version", false, "Print version and exit.")
+	maxResponseSize := root.Int64("max-response-size", mantis.DefaultMaxResponseBytes, "Maximum response size in bytes (default 64 MiB).")
 	root.Usage = func() { rootUsage(root.Output()) }
 
 	if err := root.Parse(argv); err != nil {
-		return 2
+		return flagExitCode(err)
 	}
 
 	if versionFlag {
-		fmt.Printf("mantisbt-cli %s (commit %s, built %s)\n", Version, Commit, Date)
+		if _, err := fmt.Fprintf(os.Stdout, "mantisbt-cli %s (commit %s, built %s)\n", Version, Commit, Date); err != nil {
+			fmt.Fprintf(os.Stderr, "mantisbt-cli: failed to write output: %s\n", err)
+			return 1
+		}
 		return 0
 	}
 
@@ -66,6 +68,9 @@ func Main(argv []string) int {
 	if call == nil {
 		return code
 	}
+	if !validByteLimit("mantisbt-cli", "--max-response-size", *maxResponseSize) {
+		return 2
+	}
 
 	cfg, err := config.Load(urlFlag, tokenFlag, jsonFlag)
 	if err != nil {
@@ -74,20 +79,31 @@ func Main(argv []string) int {
 	}
 
 	client := mantis.NewClient(cfg.URL, cfg.Token)
+	client.MaxResponseBytes = *maxResponseSize
 	result, err := call(client)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mantisbt-cli: %s\n", err)
 		return 1
 	}
 
-	printResult(result, cfg)
+	if err := printResult(os.Stdout, result, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "mantisbt-cli: failed to write output: %s\n", err)
+		return 1
+	}
 	return 0
 }
 
 // route walks the subcommand tree and returns the matching API call, or nil
 // and an exit code when the arguments do not resolve to a command.
 func route(args []string) (apiCall, int) {
+	if len(args) == 0 {
+		rootUsage(os.Stderr)
+		return nil, 2
+	}
 	switch args[0] {
+	case "-h", "--help":
+		rootUsage(os.Stderr)
+		return nil, 0
 	case "auth":
 		return routeAuth(args[1:])
 	case "issues":
@@ -101,12 +117,22 @@ func route(args []string) (apiCall, int) {
 }
 
 func routeAuth(args []string) (apiCall, int) {
-	if len(args) == 0 {
+	if len(args) == 0 || isHelpFlag(args[0]) {
 		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli auth whoami")
+		if len(args) > 0 {
+			return nil, 0
+		}
 		return nil, 2
 	}
 	switch args[0] {
 	case "whoami":
+		fs := commandFlags("auth whoami", "")
+		if err := fs.Parse(args[1:]); err != nil {
+			return nil, flagExitCode(err)
+		}
+		if hasUnexpectedArgs(fs) {
+			return nil, 2
+		}
 		return func(c *mantis.Client) (any, error) {
 			return c.Get("/api/rest/users/me", nil)
 		}, 0
@@ -117,21 +143,42 @@ func routeAuth(args []string) (apiCall, int) {
 }
 
 func routeIssues(args []string) (apiCall, int) {
-	if len(args) == 0 {
+	if len(args) == 0 || isHelpFlag(args[0]) {
 		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issues list [--page-size N] [--page N]")
+		if len(args) > 0 {
+			return nil, 0
+		}
 		return nil, 2
 	}
 	switch args[0] {
 	case "list":
-		fs := flag.NewFlagSet("issues list", flag.ContinueOnError)
+		fs := commandFlags("issues list", "")
 		pageSize := fs.String("page-size", "50", "Number of issues to request.")
 		page := fs.String("page", "1", "Page number to request.")
+		all := fs.Bool("all", false, "Fetch every page, starting at page 1.")
+		maxPages := fs.Int64("max-pages", 10000, "Maximum pages to request with --all.")
 		project := fs.String("project", "", "Filter by project id (server-side).")
 		filterID := fs.String("filter", "", "Predefined filter: assigned, reported, monitored, unassigned, or a stored filter id (server-side).")
 		selectFields := fs.String("select", "", "Comma-separated fields to return, e.g. id,summary,status (server-side).")
-		status := fs.String("status", "", "Keep only issues with this status name (client-side, current page only).")
-		search := fs.String("search", "", "Keep only issues whose summary contains this text (client-side, current page only).")
+		status := fs.String("status", "", "Keep only issues with this status name (client-side, fetched pages only).")
+		search := fs.String("search", "", "Keep only issues whose summary contains this text (client-side, fetched pages only).")
 		if err := fs.Parse(args[1:]); err != nil {
+			return nil, flagExitCode(err)
+		}
+		if hasUnexpectedArgs(fs) ||
+			!validInteger(fs.Name(), "--page-size", *pageSize, 1) ||
+			!validInteger(fs.Name(), "--page", *page, 1) ||
+			(*project != "" && !validInteger(fs.Name(), "--project", *project, 0)) ||
+			!validFilter(*filterID) {
+			return nil, 2
+		}
+		selection, err := validateSelection(*selectFields, *status, *search)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "issues list: %s\n", err)
+			return nil, 2
+		}
+		if err := validateAllPages(fs, *all, *maxPages, selection); err != nil {
+			fmt.Fprintf(os.Stderr, "issues list: %s\n", err)
 			return nil, 2
 		}
 
@@ -142,13 +189,16 @@ func routeIssues(args []string) (apiCall, int) {
 		if *filterID != "" {
 			params["filter_id"] = *filterID
 		}
-		if *selectFields != "" {
-			params["select"] = *selectFields
+		if selection != "" {
+			params["select"] = selection
 		}
 
 		statusFilter := *status
 		searchFilter := strings.ToLower(*search)
 		return func(c *mantis.Client) (any, error) {
+			if *all {
+				return listAllIssues(c, params, statusFilter, searchFilter, *maxPages)
+			}
 			result, err := c.Get("/api/rest/issues", params)
 			if err != nil {
 				return nil, err
@@ -165,24 +215,30 @@ func routeIssues(args []string) (apiCall, int) {
 }
 
 func routeIssue(args []string) (apiCall, int) {
-	if len(args) == 0 {
+	if len(args) == 0 || isHelpFlag(args[0]) {
 		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue <get|create|update|delete|note|file> ...")
+		if len(args) > 0 {
+			return nil, 0
+		}
 		return nil, 2
 	}
 	switch args[0] {
 	case "get":
-		fs := flag.NewFlagSet("issue get", flag.ContinueOnError)
-		if err := fs.Parse(args[1:]); err != nil {
+		fs := commandFlags("issue get", "<issue_id>")
+		ids, err := parseCommandFlags(fs, args[1:], 1)
+		if err != nil {
+			return nil, flagExitCode(err)
+		}
+		issueID := ids[0]
+		if hasUnexpectedArgs(fs) || !validInteger(fs.Name(), "issue_id", issueID, 1) {
 			return nil, 2
 		}
-		rest := fs.Args()
-		if len(rest) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue get <issue_id>")
-			return nil, 2
-		}
-		issueID := rest[0]
 		return func(c *mantis.Client) (any, error) {
-			return c.Get("/api/rest/issues/"+issueID, nil)
+			result, err := c.Get("/api/rest/issues/"+issueID, nil)
+			if err != nil {
+				return nil, err
+			}
+			return issueDetails{raw: result}, nil
 		}, 0
 	case "create":
 		return routeIssueCreate(args[1:])
@@ -201,7 +257,7 @@ func routeIssue(args []string) (apiCall, int) {
 }
 
 func routeIssueCreate(args []string) (apiCall, int) {
-	fs := flag.NewFlagSet("issue create", flag.ContinueOnError)
+	fs := commandFlags("issue create", "")
 	summary := fs.String("summary", "", "Issue summary (required).")
 	description := fs.String("description", "", "Issue description (required).")
 	project := fs.String("project", "", "Project id or name (required).")
@@ -209,6 +265,9 @@ func routeIssueCreate(args []string) (apiCall, int) {
 	priority := fs.String("priority", "", "Priority name (optional).")
 	severity := fs.String("severity", "", "Severity name (optional).")
 	if err := fs.Parse(args); err != nil {
+		return nil, flagExitCode(err)
+	}
+	if hasUnexpectedArgs(fs) {
 		return nil, 2
 	}
 
@@ -227,6 +286,9 @@ func routeIssueCreate(args []string) (apiCall, int) {
 	}
 	if len(missing) > 0 {
 		fmt.Fprintf(os.Stderr, "issue create: missing required flags: %s\n", strings.Join(missing, ", "))
+		return nil, 2
+	}
+	if !validProject(*project) {
 		return nil, 2
 	}
 
@@ -249,20 +311,19 @@ func routeIssueCreate(args []string) (apiCall, int) {
 }
 
 func routeIssueUpdate(args []string) (apiCall, int) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue update <issue_id> [--summary ...] [--status ...] ...")
-		return nil, 2
-	}
-	issueID := args[0]
-
-	fs := flag.NewFlagSet("issue update", flag.ContinueOnError)
+	fs := commandFlags("issue update", "<issue_id>")
 	summary := fs.String("summary", "", "New summary.")
 	description := fs.String("description", "", "New description.")
 	status := fs.String("status", "", "New status name.")
 	handler := fs.String("handler", "", "Assignee username.")
 	priority := fs.String("priority", "", "New priority name.")
 	severity := fs.String("severity", "", "New severity name.")
-	if err := fs.Parse(args[1:]); err != nil {
+	ids, err := parseCommandFlags(fs, args, 1)
+	if err != nil {
+		return nil, flagExitCode(err)
+	}
+	issueID := ids[0]
+	if hasUnexpectedArgs(fs) || !validInteger(fs.Name(), "issue_id", issueID, 1) {
 		return nil, 2
 	}
 
@@ -296,30 +357,34 @@ func routeIssueUpdate(args []string) (apiCall, int) {
 }
 
 func routeIssueDelete(args []string) (apiCall, int) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue delete <issue_id> [--yes]")
-		return nil, 2
-	}
-	issueID := args[0]
-
-	fs := flag.NewFlagSet("issue delete", flag.ContinueOnError)
+	fs := commandFlags("issue delete", "<issue_id>")
 	yes := fs.Bool("yes", false, "Skip the confirmation prompt.")
-	if err := fs.Parse(args[1:]); err != nil {
+	ids, err := parseCommandFlags(fs, args, 1)
+	if err != nil {
+		return nil, flagExitCode(err)
+	}
+	issueID := ids[0]
+	if hasUnexpectedArgs(fs) || !validInteger(fs.Name(), "issue_id", issueID, 1) {
 		return nil, 2
 	}
 
 	skipPrompt := *yes
 	return func(c *mantis.Client) (any, error) {
-		if !skipPrompt && !confirm(fmt.Sprintf("Delete issue #%s? This cannot be undone. [y/N] ", issueID)) {
-			return nil, fmt.Errorf("aborted")
+		if !skipPrompt {
+			if err := confirm(os.Stdin, os.Stderr, fmt.Sprintf("Delete issue #%s? This cannot be undone. [y/N] ", issueID)); err != nil {
+				return nil, err
+			}
 		}
 		return c.Delete("/api/rest/issues/" + issueID)
 	}, 0
 }
 
 func routeIssueNote(args []string) (apiCall, int) {
-	if len(args) == 0 {
+	if len(args) == 0 || isHelpFlag(args[0]) {
 		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue note <add|delete> ...")
+		if len(args) > 0 {
+			return nil, 0
+		}
 		return nil, 2
 	}
 	switch args[0] {
@@ -334,16 +399,15 @@ func routeIssueNote(args []string) (apiCall, int) {
 }
 
 func routeIssueNoteAdd(args []string) (apiCall, int) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue note add <issue_id> --text <text> [--private]")
-		return nil, 2
-	}
-	issueID := args[0]
-
-	fs := flag.NewFlagSet("issue note add", flag.ContinueOnError)
+	fs := commandFlags("issue note add", "<issue_id>")
 	text := fs.String("text", "", "Note text (required).")
 	private := fs.Bool("private", false, "Make the note private.")
-	if err := fs.Parse(args[1:]); err != nil {
+	ids, err := parseCommandFlags(fs, args, 1)
+	if err != nil {
+		return nil, flagExitCode(err)
+	}
+	issueID := ids[0]
+	if hasUnexpectedArgs(fs) || !validInteger(fs.Name(), "issue_id", issueID, 1) {
 		return nil, 2
 	}
 	if *text == "" {
@@ -362,30 +426,36 @@ func routeIssueNoteAdd(args []string) (apiCall, int) {
 }
 
 func routeIssueNoteDelete(args []string) (apiCall, int) {
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue note delete <issue_id> <note_id> [--yes]")
-		return nil, 2
-	}
-	issueID, noteID := args[0], args[1]
-
-	fs := flag.NewFlagSet("issue note delete", flag.ContinueOnError)
+	fs := commandFlags("issue note delete", "<issue_id> <note_id>")
 	yes := fs.Bool("yes", false, "Skip the confirmation prompt.")
-	if err := fs.Parse(args[2:]); err != nil {
+	ids, err := parseCommandFlags(fs, args, 2)
+	if err != nil {
+		return nil, flagExitCode(err)
+	}
+	issueID, noteID := ids[0], ids[1]
+	if hasUnexpectedArgs(fs) ||
+		!validInteger(fs.Name(), "issue_id", issueID, 1) ||
+		!validInteger(fs.Name(), "note_id", noteID, 1) {
 		return nil, 2
 	}
 
 	skipPrompt := *yes
 	return func(c *mantis.Client) (any, error) {
-		if !skipPrompt && !confirm(fmt.Sprintf("Delete note #%s on issue #%s? [y/N] ", noteID, issueID)) {
-			return nil, fmt.Errorf("aborted")
+		if !skipPrompt {
+			if err := confirm(os.Stdin, os.Stderr, fmt.Sprintf("Delete note #%s on issue #%s? [y/N] ", noteID, issueID)); err != nil {
+				return nil, err
+			}
 		}
 		return c.Delete("/api/rest/issues/" + issueID + "/notes/" + noteID)
 	}, 0
 }
 
 func routeIssueFile(args []string) (apiCall, int) {
-	if len(args) == 0 {
+	if len(args) == 0 || isHelpFlag(args[0]) {
 		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue file <add|list|get> ...")
+		if len(args) > 0 {
+			return nil, 0
+		}
 		return nil, 2
 	}
 	switch args[0] {
@@ -402,14 +472,18 @@ func routeIssueFile(args []string) (apiCall, int) {
 }
 
 func routeIssueFileAdd(args []string) (apiCall, int) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue file add <issue_id> <path>...")
-		return nil, 2
+	fs := commandFlags("issue file add", "<issue_id> <path>...")
+	maxUploadSize := fs.Int64("max-upload-size", defaultMaxUploadBytes, "Maximum combined file size in bytes (default 32 MiB). Put this flag before file paths.")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: mantisbt-cli issue file add <issue_id> [flags] <path>...")
+		fs.PrintDefaults()
 	}
-	issueID := args[0]
-
-	fs := flag.NewFlagSet("issue file add", flag.ContinueOnError)
-	if err := fs.Parse(args[1:]); err != nil {
+	ids, err := parseCommandFlags(fs, args, 1)
+	if err != nil {
+		return nil, flagExitCode(err)
+	}
+	issueID := ids[0]
+	if !validInteger(fs.Name(), "issue_id", issueID, 1) || !validByteLimit(fs.Name(), "--max-upload-size", *maxUploadSize) {
 		return nil, 2
 	}
 	paths := fs.Args()
@@ -422,31 +496,32 @@ func routeIssueFileAdd(args []string) (apiCall, int) {
 	// missing path is reported as a runtime error rather than a usage error.
 	return func(c *mantis.Client) (any, error) {
 		files := make([]any, 0, len(paths))
+		remaining := *maxUploadSize
 		for _, path := range paths {
-			data, err := os.ReadFile(path)
+			data, err := readUpload(path, remaining)
 			if err != nil {
 				return nil, fmt.Errorf("read %s: %w", path, err)
 			}
 			files = append(files, map[string]any{
 				"name":    filepath.Base(path),
-				"content": base64.StdEncoding.EncodeToString(data),
+				"content": data, // encoding/json encodes []byte as base64.
 			})
+			remaining -= int64(len(data))
 		}
 		return c.Post("/api/rest/issues/"+issueID+"/files", map[string]any{"files": files})
 	}, 0
 }
 
 func routeIssueFileList(args []string) (apiCall, int) {
-	fs := flag.NewFlagSet("issue file list", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
+	fs := commandFlags("issue file list", "<issue_id>")
+	ids, err := parseCommandFlags(fs, args, 1)
+	if err != nil {
+		return nil, flagExitCode(err)
+	}
+	issueID := ids[0]
+	if hasUnexpectedArgs(fs) || !validInteger(fs.Name(), "issue_id", issueID, 1) {
 		return nil, 2
 	}
-	rest := fs.Args()
-	if len(rest) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue file list <issue_id>")
-		return nil, 2
-	}
-	issueID := rest[0]
 
 	return func(c *mantis.Client) (any, error) {
 		return c.Get("/api/rest/issues/"+issueID+"/files", nil)
@@ -454,15 +529,16 @@ func routeIssueFileList(args []string) (apiCall, int) {
 }
 
 func routeIssueFileGet(args []string) (apiCall, int) {
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: mantisbt-cli issue file get <issue_id> <file_id> [--output path]")
-		return nil, 2
-	}
-	issueID, fileID := args[0], args[1]
-
-	fs := flag.NewFlagSet("issue file get", flag.ContinueOnError)
+	fs := commandFlags("issue file get", "<issue_id> <file_id>")
 	output := fs.String("output", "", "Destination path. Defaults to the attachment filename in the current directory.")
-	if err := fs.Parse(args[2:]); err != nil {
+	ids, err := parseCommandFlags(fs, args, 2)
+	if err != nil {
+		return nil, flagExitCode(err)
+	}
+	issueID, fileID := ids[0], ids[1]
+	if hasUnexpectedArgs(fs) ||
+		!validInteger(fs.Name(), "issue_id", issueID, 1) ||
+		!validInteger(fs.Name(), "file_id", fileID, 1) {
 		return nil, 2
 	}
 
@@ -482,20 +558,21 @@ func routeIssueFileGet(args []string) (apiCall, int) {
 			return nil, err
 		}
 
-		encoded, _ := file["content"].(string)
-		if encoded == "" {
+		encoded, ok := file["content"].(string)
+		if !ok {
 			return nil, fmt.Errorf("attachment #%s has no content available for download", fileID)
 		}
-		data, err := base64.StdEncoding.DecodeString(encoded)
+		if encoded == "" {
+			if size := valueToString(file["size"]); size != "" && size != "0" {
+				return nil, fmt.Errorf("attachment #%s reports a non-zero size but has empty content", fileID)
+			}
+		}
+		data := base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))
+		size, err := writeAttachment(path, data, dest != "")
 		if err != nil {
-			return nil, fmt.Errorf("attachment #%s: malformed content: %w", fileID, err)
+			return nil, fmt.Errorf("attachment #%s: %w", fileID, err)
 		}
-		// Attachments can carry sensitive data, so they land owner-only rather
-		// than at the umask default.
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			return nil, fmt.Errorf("write %s: %w", path, err)
-		}
-		return downloaded{raw: result, path: path, size: len(data)}, nil
+		return downloaded{raw: result, path: path, size: size}, nil
 	}, 0
 }
 
@@ -513,27 +590,6 @@ func firstFile(result any) (map[string]any, bool) {
 	return file, ok
 }
 
-// attachmentPath decides where a downloaded attachment is written. An explicit
-// --output wins and may overwrite; otherwise the server-supplied filename is
-// used, reduced to its base name so the server cannot pick the directory, and
-// an existing file is never clobbered without the user naming it.
-func attachmentPath(output, filename, fileID string) (string, error) {
-	if output != "" {
-		return output, nil
-	}
-	name := filepath.Base(filename)
-	if filename == "" || name == "." || name == string(filepath.Separator) {
-		return "", fmt.Errorf("attachment #%s has no usable filename; pass --output", fileID)
-	}
-	switch _, err := os.Stat(name); {
-	case err == nil:
-		return "", fmt.Errorf("%s already exists; pass --output to choose a destination", name)
-	case !errors.Is(err, os.ErrNotExist):
-		return "", fmt.Errorf("check %s: %w", name, err)
-	}
-	return name, nil
-}
-
 // projectRef renders a project reference, using an id when the value is numeric
 // and a name otherwise.
 func projectRef(v string) map[string]any {
@@ -541,18 +597,6 @@ func projectRef(v string) map[string]any {
 		return map[string]any{"id": id}
 	}
 	return map[string]any{"name": v}
-}
-
-// confirm prints a prompt and reads a yes/no answer from stdin. A non-interactive
-// stdin (EOF) is treated as "no".
-func confirm(prompt string) bool {
-	fmt.Fprint(os.Stderr, prompt)
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil {
-		return false
-	}
-	answer := strings.ToLower(strings.TrimSpace(line))
-	return answer == "y" || answer == "yes"
 }
 
 // filterIssues applies client-side filters to a list response. status is
@@ -592,53 +636,52 @@ func filterIssues(result any, status, search string) any {
 	return out
 }
 
-func printResult(result any, cfg config.Config) {
+func printResult(w io.Writer, result any, cfg config.Config) error {
+	if detail, ok := result.(issueDetails); ok {
+		if cfg.JSONOutput {
+			return printJSON(w, detail.raw)
+		}
+		return printIssueDetails(w, detail.raw)
+	}
 	if d, ok := result.(downloaded); ok {
 		if cfg.JSONOutput {
-			printJSON(d.raw)
-			return
+			return printJSON(w, d.raw)
 		}
-		fmt.Printf("wrote %s (%d bytes)\n", d.path, d.size)
-		return
+		_, err := fmt.Fprintf(w, "wrote %s (%d bytes)\n", d.path, d.size)
+		return err
 	}
 
 	if cfg.JSONOutput {
-		printJSON(result)
-		return
+		return printJSON(w, result)
 	}
 
 	if result == nil {
-		fmt.Println("OK")
-		return
+		_, err := fmt.Fprintln(w, "OK")
+		return err
 	}
 
 	if m, ok := result.(map[string]any); ok {
 		if issues, ok := m["issues"]; ok {
-			printIssues(issues)
-			return
+			return printIssues(w, issues)
 		}
 		if issue, ok := m["issue"].(map[string]any); ok {
-			printIssue(issue)
-			return
+			return printIssue(w, issue)
 		}
 		if note, ok := m["note"].(map[string]any); ok {
-			printNote(note)
-			return
+			return printNote(w, note)
 		}
 		if files, ok := m["files"]; ok {
-			printFiles(files)
-			return
+			return printFiles(w, files)
 		}
 		if user, ok := m["user"].(map[string]any); ok {
-			printUser(user)
-			return
+			return printUser(w, user)
 		}
 	}
 
-	printJSON(result)
+	return printJSON(w, result)
 }
 
-func printUser(user map[string]any) {
+func printUser(w io.Writer, user map[string]any) error {
 	name := firstNonEmpty(user, "real_name", "name", "email")
 	if name == "" {
 		name = "unknown"
@@ -647,43 +690,49 @@ func printUser(user map[string]any) {
 	if v, ok := user["id"]; ok {
 		id = valueToString(v)
 	}
-	fmt.Printf("%s (%s)\n", name, id)
+	_, err := fmt.Fprintf(w, "%s (%s)\n", name, id)
+	return err
 }
 
-func printIssues(issues any) {
+func printIssues(w io.Writer, issues any) error {
 	list, ok := issues.([]any)
 	if !ok {
-		printJSON(issues)
-		return
+		return printJSON(w, issues)
 	}
 	for _, item := range list {
 		if issue, ok := item.(map[string]any); ok {
-			printIssue(issue)
+			if err := printIssue(w, issue); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
-func printNote(note map[string]any) {
+func printNote(w io.Writer, note map[string]any) error {
 	id := "unknown"
 	if v, ok := note["id"]; ok {
 		id = valueToString(v)
 	}
 	reporter := ValueName(note["reporter"])
 	text := valueToString(note["text"])
-	fmt.Printf("note #%s by %s: %s\n", id, reporter, text)
+	_, err := fmt.Fprintf(w, "note #%s by %s: %s\n", id, reporter, text)
+	return err
 }
 
-func printFiles(files any) {
+func printFiles(w io.Writer, files any) error {
 	list, ok := files.([]any)
 	if !ok {
-		printJSON(files)
-		return
+		return printJSON(w, files)
 	}
 	for _, item := range list {
 		if file, ok := item.(map[string]any); ok {
-			fmt.Println(fileLine(file))
+			if _, err := fmt.Fprintln(w, fileLine(file)); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 // fileLine renders one attachment. Attachment responses carry the base64
@@ -693,7 +742,7 @@ func fileLine(file map[string]any) string {
 	if v, ok := file["id"]; ok {
 		id = valueToString(v)
 	}
-	line := fmt.Sprintf("file #%s %s (%s bytes", id, valueToString(file["filename"]), valueToString(file["size"]))
+	line := fmt.Sprintf("file #%s %s (%s bytes", id, firstNonEmpty(file, "filename", "name"), valueToString(file["size"]))
 	if ct := truthyString(file["content_type"]); ct != "" {
 		line += ", " + ct
 	}
@@ -704,7 +753,7 @@ func fileLine(file map[string]any) string {
 	return line
 }
 
-func printIssue(issue map[string]any) {
+func printIssue(w io.Writer, issue map[string]any) error {
 	issueID := "unknown"
 	if v, ok := issue["id"]; ok {
 		issueID = valueToString(v)
@@ -715,7 +764,8 @@ func printIssue(issue map[string]any) {
 	}
 	status := ValueName(issue["status"])
 	project := ValueName(issue["project"])
-	fmt.Printf("#%s [%s] %s - %s\n", issueID, status, project, summary)
+	_, err := fmt.Fprintf(w, "#%s [%s] %s - %s\n", issueID, status, project, summary)
+	return err
 }
 
 // ValueName extracts a human-readable label from a MantisBT enum/object value,
@@ -785,13 +835,11 @@ func valueToString(v any) string {
 	}
 }
 
-func printJSON(v any) {
-	enc := json.NewEncoder(os.Stdout)
+func printJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(v); err != nil {
-		fmt.Fprintf(os.Stderr, "mantisbt-cli: failed to render JSON: %s\n", err)
-	}
+	return enc.Encode(v)
 }
 
 func rootUsage(w io.Writer) {
@@ -804,9 +852,10 @@ commands:
   auth whoami            Show the authenticated user.
   issues list            List accessible issues.
                          [--page-size N] [--page N] [--project id]
+                         [--all] [--max-pages N]
                          [--filter assigned|reported|monitored|unassigned]
                          [--select fields] [--status name] [--search text]
-  issue get <id>         Show an issue by id.
+  issue get <id>         Show an issue with its description, notes, and attachments.
   issue create           Create an issue.
                          --summary --description --project --category
                          [--priority] [--severity]
@@ -817,7 +866,7 @@ commands:
   issue note add <id>    Add a note. --text [--private]
   issue note delete <id> <note_id>
                          Delete a note. [--yes]
-  issue file add <id> <path>...
+  issue file add <id> [--max-upload-size bytes] <path>...
                          Attach one or more local files to an issue.
   issue file list <id>   List the attachments on an issue.
   issue file get <id> <file_id>
@@ -828,5 +877,6 @@ global flags:
   --token    MantisBT API token. Defaults to MANTISBT_TOKEN.
   --json     Print raw JSON responses.
   --version  Print version and exit.
+  --max-response-size  Maximum response size in bytes (default 67108864).
 `)
 }

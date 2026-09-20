@@ -10,14 +10,22 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version: stable
+          go-version-file: go.mod
           cache: false # no go.sum: the project has no dependencies
       - name: gofmt
+        if: runner.os == 'Linux'
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then

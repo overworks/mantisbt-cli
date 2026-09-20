@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -72,7 +73,7 @@ func TestRouteRejectsUpdateWithoutFields(t *testing.T) {
 
 func TestRouteAcceptsIssuesListFilters(t *testing.T) {
 	args := []string{"issues", "list", "--project", "3", "--filter", "assigned",
-		"--select", "id,summary", "--status", "resolved", "--search", "login"}
+		"--select", "id,summary,status", "--status", "resolved", "--search", "login"}
 	call, code := route(args)
 	if call == nil {
 		t.Fatalf("expected a resolved command, got nil (exit code %d)", code)
@@ -290,7 +291,7 @@ func TestIssueFileGetWritesAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
+	if mode := info.Mode().Perm(); runtime.GOOS != "windows" && mode != 0o600 {
 		t.Fatalf("expected mode 0600, got %04o", mode)
 	}
 
@@ -298,7 +299,7 @@ func TestIssueFileGetWritesAttachment(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected a downloaded result, got %T", result)
 	}
-	if d.path != dest || d.size != len("hello attachment") {
+	if d.path != dest || d.size != int64(len("hello attachment")) {
 		t.Fatalf("unexpected download summary: %+v", d)
 	}
 }

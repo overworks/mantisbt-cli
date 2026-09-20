@@ -41,6 +41,9 @@ func Load(flagURL, flagToken string, jsonOutput bool) (Config, error) {
 			strings.Join(missing, ", "),
 		)
 	}
+	if _, err := ParseURL(url); err != nil {
+		return Config{}, err
+	}
 
 	return Config{URL: url, Token: token, JSONOutput: jsonOutput}, nil
 }
